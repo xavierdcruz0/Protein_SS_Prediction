@@ -15,13 +15,30 @@ from data import Protein_Sequence
 
 #### constants ####
 
-BATCH_SIZE = 10
-NUM_TIMESTEPS = 50
-NUM_FEATURES = data.NUM_FEATURES # 20 PSSM scores, 20 types of residue + 1 wildcard type = 41
-NUM_CATEGORIES_LSTM = data.NUM_CATEGORIES + 1 # (Helix + Sheet + Coil = 3) + <EOL> = 4
+BATCH_SIZE = 32
+NUM_TIMESTEPS = 100
+NUM_FEATURES = data.NUM_FEATURES
+NUM_CATEGORIES = data.NUM_CATEGORIES
 NUM_EPOCHS = 1
 
 MODEL_NAME = 'myothermodel_'
+
+########## some simple useful operations on data ######
+def to_1hot(arr):
+    inarr = arr.flatten()
+    outarr = np.zeros((len(arr), NUM_CATEGORIES_LSTM))
+    for i in range(len(inarr)):
+        index = inarr[i]
+        outarr[i][index] = 1
+    return outarr
+
+def from_1hot(arr):
+    outarr = np.zeros(len(arr))
+    for i in range(len(arr)):
+        onehot = arr[i]
+        index = np.where(onehot == 1)[0][0]
+        outarr[i] = index
+    return outarr
 
 def reverse_time(x):
     '''
@@ -33,6 +50,8 @@ def reverse_time(x):
     assert K.ndim(x) == 3, "Should be a 3D tensor."
     rev = K.permute_dimensions(x, (1, 0, 2))[::-1]
     return K.permute_dimensions(rev, (1, 0, 2))
+
+########## neural net stuff #############
 
 def build_net():
 
@@ -49,7 +68,7 @@ def build_net():
     fc1 = TimeDistributed(Dense(output_dim=(128), activation='relu'))(bi_lstm)
     drop1 = TimeDistributed(Dropout(p=0.5))(fc1)
 
-    y_hat = TimeDistributed(Dense(output_dim=NUM_CATEGORIES_LSTM, activation='softmax'))(drop1)
+    y_hat = TimeDistributed(Dense(output_dim=NUM_CATEGORIES, activation='softmax'))(drop1)
 
     model = Model(input=inputs, output=y_hat)
 
@@ -74,38 +93,39 @@ def test(net, X_test, y_test):
 
 ########## TRAINING SCRIPT ##############
 
-seqs_train = data.load_dataset_serialized('test.dataset') # for the laptop
-#seqs_train = data.load_dataset_serialized('train.dataset') # for the cluster
-
-seqs_test = data.load_dataset_serialized('test.dataset')
+# load data
+print('Loading training data. Might take a while...')
+#seqs_train = data.load_dataset_serialized('test_scaled.dataset') # for the laptop
+seqs_train = data.load_dataset_serialized('train_scaled2.dataset') # for the cluster
+print('Loading testing data. Might take a while...')
+seqs_test = data.load_dataset_serialized('test_scaled2.dataset')
 
 ## organize validation data into appropriate shape to be fed into net
 X_test = map(data.get_data_from_protein_seq, seqs_test)
-y_test = map(data.get_label_from_protein_seq_LSTM, seqs_test)
-
-# Training on single proteins sampled per batch
-# net = build_net_dropout()
-#
-# for seq in seqs_train:
-#     # omit any proteins shorter than 100 residues
-#     if seq.length < NUM_TIMESTEPS:
-#         pass
-#     else:
-#         Xs, ys = make_subsequences(sequence=seq, num_timesteps=NUM_TIMESTEPS, stride=3)
-#         net.train_on_batch(Xs, ys, verbose=1)
+y_test = map(data.get_label_from_protein_seq, seqs_test)
 
 
-# Training on entire dataset sampled per batch
+augmented, non_augmented = data.make_crops(seqs_train, crop_size=100, stride=10)
+
+# separate the augmented (all of length sequences into their input and output parts
+X = []
+y = []
+for a in augmented:
+    datum = a[0]
+    label = a[1]
+
+    X.append(datum)
+    y.append(to_1hot(label))
+
+X = np.asarray(X)
+y = np.asarray(y)
+
+
+
 net = build_net()
 
-# shuffle the data and concatenate it into a single long sequence, delimited by <EOL> markers.
-concatenated_data, concatenated_labels = data.concatenate_full_dataset(seqs_train)
-
-# augment the concatenated dataset by sampling overlapping subsequences, with a stride.
-Xs, ys = data.make_redundant_subseqs_from_concated_dataset(concatenated_data, concatenated_labels, num_timesteps=NUM_TIMESTEPS, stride=NUM_TIMESTEPS)
-
 # fit on the dataset of subsequences
-net.fit(Xs, ys, verbose=1, nb_epoch=NUM_EPOCHS, callbacks=[ModelCheckpoint(filepath=MODEL_NAME+'lstm_{epoch}.chkpt', monitor='acc')])
+net.fit(X, y, verbose=1, nb_epoch=NUM_EPOCHS, batch_size=BATCH_SIZE, callbacks=[ModelCheckpoint(filepath=MODEL_NAME+'lstm_{epoch}.chkpt', monitor='acc')])
 
 # compute validation scores on each epoch's saved model:
 all_scores = np.zeros((NUM_EPOCHS, 2))

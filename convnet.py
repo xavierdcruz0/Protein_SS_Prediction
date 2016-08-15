@@ -15,31 +15,24 @@ from data import Protein_Sequence
 # constants
 
 # number of features/channels per pixel
-NUM_FEATURES = data.NUM_FEATURES  # 20 PSSM scores + 20 types of residue + 1 type for "unknown"
-NUM_CATEGORIES = data.NUM_CATEGORIES  # Coil + Sheet + Helix
+NUM_FEATURES = data.NUM_FEATURES
+NUM_CATEGORIES = data.NUM_CATEGORIES
 
 # other hyperparams
 NUM_EPOCHS = 1
+BATCH_SIZE = 32
 
 # for identifying particular saved models
 MODEL_NAME = 'mymodel_'
 
 ########## some simple useful operations on data ######
-def to_1hot(arr):
-    inarr = arr.flatten()
-    outarr = np.zeros((len(arr), NUM_CATEGORIES))
-    for i in range(len(inarr)):
-        index = inarr[i]
-        outarr[i][index] = 1
-    return outarr
-
-def from_1hot(arr):
-    outarr = np.zeros(len(arr))
-    for i in range(len(arr)):
-        onehot = arr[i]
-        index = np.where(onehot == 1)[0][0]
-        outarr[i] = index
-    return outarr
+# def to_1hot(arr):
+#     inarr = arr.flatten()
+#     outarr = np.zeros((len(arr), NUM_CATEGORIES))
+#     for i in range(len(inarr)):
+#         index = inarr[i]
+#         outarr[i][index] = 1
+#     return outarr
 
 ########## neural net stuff #############
 
@@ -113,27 +106,25 @@ def test(net, X_test, y_test):
 
     average_results = np.sum(results, axis=0) / float(len(X_test))
 
-    print('Loss: {}, Accuracy: {}'.format(average_results[0], average_results[1]))
+    print('Test Loss: {}, Test Accuracy: {}'.format(average_results[0], average_results[1]))
     return average_results
 
 ########## TRAINING SCRIPT ##############
 
-seqs_train = data.load_dataset_serialized('test.dataset') # for the laptop
-#seqs_train = data.load_dataset_serialized('train.dataset') # for the cluster
-
-seqs_test = data.load_dataset_serialized('test.dataset')
+# load data
+print('Loading training data. Might take a while...')
+seqs_train = data.load_dataset_serialized('train_scaled2.dataset') # for the laptop
+#seqs_train = data.load_dataset_serialized('train_scaled2.dataset') # for the cluster
+print('Loading testing data. Might take a while...')
+seqs_test = data.load_dataset_serialized('test_scaled2.dataset')
 
 # for all proteins longer than 100 residues:
 #   walk along the protein with a stride, taking crops of length 100.
 # return list of crops as 'augmented' and list of uncropped data (shorter than 100) as 'non_augmented'
-augmented, non_augmented = data.make_crops(seqs_train)
+# we can fine-tune with the latter later on, or use it as validation data...
+augmented, non_augmented = data.make_crops(seqs_train, crop_size=100, stride=10)
 
-# build the neural net object
-net = build_net_2()
-#net = build_net_3()
-#net = build_net_4()
-
-# separate the augmented sequences into their input and output parts
+# separate the augmented (all of length=crop_size) sequences into their input and output parts
 X = []
 y = []
 for a in augmented:
@@ -141,7 +132,7 @@ for a in augmented:
     label = a[1]
 
     X.append(datum)
-    y.append(to_1hot(label))
+    y.append(data.to_1hot(label))
 
 X = np.asarray(X)
 y = np.asarray(y)
@@ -174,8 +165,13 @@ y_test = map(data.get_label_from_protein_seq, seqs_test)
 #     all_results[epoch] = average_results
 
 
-#net.fit(X, y, verbose=1, shuffle=True, nb_epoch=NUM_EPOCHS, callbacks=[ModelCheckpoint(filepath='convnet_{epoch:02d}-{acc:.2f}.chkpt', monitor='acc')])
-net.fit(X, y, verbose=1, shuffle=True, nb_epoch=NUM_EPOCHS, callbacks=[ModelCheckpoint(filepath=MODEL_NAME+'convnet_{epoch}.chkpt', monitor='acc')])
+# build the neural net object
+#net = build_net_2()
+net = build_net_3()
+#net = build_net_4()
+
+# train the neural net
+net.fit(X, y, verbose=1, shuffle=True, batch_size=BATCH_SIZE, nb_epoch=NUM_EPOCHS, callbacks=[ModelCheckpoint(filepath=MODEL_NAME+'convnet_{epoch}.chkpt', monitor='acc')])
 
 # compute validation scores on each epoch's saved model:
 all_scores = np.zeros((NUM_EPOCHS, 2))
@@ -188,7 +184,7 @@ for i in range(NUM_EPOCHS):
 all_loss = all_scores[:, 0]
 all_accuracy = all_scores[:, 1]
 
-with open(MODEL_NAME+'conv_scores.results', 'wb') as f:
+with open(MODEL_NAME+'convnet_scores.results', 'wb') as f:
     pkl.dump({'loss': all_loss, 'accuracy': all_accuracy}, f)
 
 #plt.plot(all_accuracy)

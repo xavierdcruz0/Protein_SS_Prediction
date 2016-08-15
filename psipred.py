@@ -1,21 +1,44 @@
 #!/usr/bin/env python
 
-#### WORK IN PROGRESS
-
-
 from keras.models import Model, Sequential
-from keras.layers import Activation, Convolution1D, Masking, BatchNormalization, Input, LSTM, TimeDistributedDense, Merge, Lambda, merge, TimeDistributed, Dense, Dropout, Flatten
+from keras.layers import Input, LSTM, Lambda, merge, TimeDistributed, Dense, Dropout, Flatten, Reshape
 from keras.optimizers import SGD, Adam, Adagrad, Nadam, Adamax, RMSprop
+from keras.callbacks import ModelCheckpoint
 import keras.backend as K
 import numpy as np
-import matplotlib.pyplot as plt
-import data
-from data import *
+import cPickle as pkl
+from matplotlib import pyplot as plt
 
-BATCH_SIZE = 10
-NUM_TIMESTEPS = 15 # as given in (Jones, 1999, p197)
-NUM_FEATURES = data.NUM_FEATURES # 20 PSSM scores, 20 types of residue + 1 wildcard type = 41
-NUM_CATEGORIES = data.NUM_CATEGORIES + 1 # Helix + Sheet + Coil + <EOL>
+import data
+from data import Protein_Sequence
+
+
+#### constants ####
+
+BATCH_SIZE = 128
+NUM_TIMESTEPS = 15
+NUM_FEATURES = 41 # 20 PSSM scores, 20 types of residue + 1 wildcard type = 41
+NUM_CATEGORIES = 3 # (Helix + Sheet + Coil = 3)
+NUM_EPOCHS = 1
+
+MODEL_NAME = 'psipred_'
+
+########## some simple useful operations on data ######
+def to_1hot(arr):
+    inarr = arr.flatten()
+    outarr = np.zeros((len(arr), NUM_CATEGORIES))
+    for i in range(len(inarr)):
+        index = inarr[i]
+        outarr[i][index] = 1
+    return outarr
+
+def from_1hot(arr):
+    outarr = np.zeros(len(arr))
+    for i in range(len(arr)):
+        onehot = arr[i]
+        index = np.where(onehot == 1)[0][0]
+        outarr[i] = index
+    return outarr
 
 def reverse_time(x):
     '''
@@ -28,116 +51,87 @@ def reverse_time(x):
     rev = K.permute_dimensions(x, (1, 0, 2))[::-1]
     return K.permute_dimensions(rev, (1, 0, 2))
 
-def build_net_1():
+########## neural net stuff #############
 
-    inputs = Input(shape=(NUM_TIMESTEPS * NUM_FEATURES,))
+def build_net():
 
-    fc1 = Dense(output_dim=60, activation='relu')(inputs)
+    inputs = Input(shape=(NUM_TIMESTEPS, NUM_FEATURES))
+    inputs = Flatten()(inputs)
+    hidden1 = Dense(output_dim=(75,), activation='relu')(inputs)
+    classify1 = Dense(hidden1, output_dim=(3,), activation='softmax')(hidden1)
 
-    classify = Dense(output_dim=3, activation='softmax')(fc1)
-
-    model = Model(input=inputs, output=classify)
+    model = Model(input=inputs, output=classify1)
 
     optimizer = Adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08)
-    #optimizer = RMSprop(lr=0.001, rho=0.9, epsilon=1e-08)
 
     model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
 
     return model
 
-def build_net_2():
+def test(net, X_test, y_test):
+    results = np.zeros((len(X_test), 2))
+    for i in range(len(X_test)):
+        result = np.asarray(
+            net.evaluate(np.array([X_test[i]]), np.array([y_test[i]]), batch_size=1, verbose=0)).reshape((1, 2))
+        results[i] = result
 
-    inputs = Input(shape=(NUM_TIMESTEPS, 4))
+    average_results = np.sum(results, axis=0) / float(len(X_test))
 
-    fc1 = Dense(output_dim=60, activation='relu')(inputs)
-
-    classify = Dense(output_dim=3, activation='softmax')(fc1)
-
-    model = Model(input=inputs, output=classify)
-
-    optimizer = Adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08)
-    #optimizer = RMSprop(lr=0.001, rho=0.9, epsilon=1e-08)
-
-    model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=['accuracy'])
-
-    return model
-
-
-# def __concatenate_data(sequences):
-#
-#     concatenated_data = None
-#     concatenated_labels = None
-#
-#     for i in range(len(sequences)):
-#         sequence = sequences[i]
-#
-#         if concatenated_data is None and concatenated_labels is None:
-#
-#             sequence.add_start_end_markers()
-#             X, y = sequence.get_datum_and_label()
-#             concatenated_data = X
-#             concatenated_labels = to_1hot(y)
-#
-#         else:
-#
-#             sequence.add_start_end_markers()
-#             X, y = sequence.get_datum_and_label()
-#
-#             concatenated_data = np.concatenate([concatenated_data, X])
-#             concatenated_labels = np.concatenate([concatenated_labels, to_1hot(y)])
-#
-#             print("Concating data... percentage complete: {}%".format((i / float(len(sequences))) * 100))
-#
-#     return concatenated_data, concatenated_labels
-
-# def __make_redundant_sequences(concatenated_data, concatenated_labels, stride=1):
-#     pointer = 0
-#     Xs = []
-#     ys = []
-#     while pointer < len(concatenated_data) - NUM_TIMESTEPS:
-#         window_X = concatenated_data[pointer : pointer + NUM_TIMESTEPS]
-#         window_y = concatenated_labels[pointer: pointer + NUM_TIMESTEPS]
-#         Xs.append(window_X)
-#         ys.append(middle(window_y))
-#
-#         print("Creating redundant sequences... percentage complete: {}%".format((pointer / float(len(concatenated_data))) * 100))
-#
-#         pointer += stride
-#
-#     return np.asarray(Xs), np.asarray(ys)
-
-
+    print('Loss: {}, Accuracy: {}'.format(average_results[0], average_results[1]))
+    return average_results
 
 ########## TRAINING SCRIPT ##############
 
-seqs_train = data.load_dataset_serialized('test.dataset') # for the laptop
-#seqs_train = load_dataset_serialized('train.dataset') # for the cluster
+# load data
+#seqs_train = data.load_dataset_serialized('test_scaled.dataset') # for the laptop
+seqs_train = data.load_dataset_serialized('test_scaled2.dataset') # for the cluster
+
+seqs_test = data.load_dataset_serialized('test_scaled2.dataset')
+
+## organize validation data into appropriate shape to be fed into net
+X_test = map(data.get_data_from_protein_seq, seqs_test)
+y_test = map(data.get_label_from_protein_seq, seqs_test)
+
+
+augmented, non_augmented = data.make_crops(seqs_train, crop_size=NUM_TIMESTEPS, stride=1)
+
+# separate the augmented (all of length sequences into their input and output parts
+X = []
+y = []
+for a in augmented:
+    datum = a[0]
+    label = a[1]
+
+    X.append(datum)
+    def scalar_2_onehot(n, num_categories=NUM_CATEGORIES):
+        outarr = np.zeros(NUM_CATEGORIES)
+        outarr[n] = 1
+    y.append(scalar_2_onehot(data.middle(label)))
+
+X = np.asarray(X)
+y = np.asarray(y)
 
 
 
-# net = build_net_dropout()
+net = build_net()
+
+# fit on the dataset of subsequences
+net.fit(X, y, verbose=1, nb_epoch=NUM_EPOCHS, batch_size=BATCH_SIZE, callbacks=[ModelCheckpoint(filepath=MODEL_NAME+'psipred_{epoch}.chkpt', monitor='acc')])
+
+# # compute validation scores on each epoch's saved model:
+# all_scores = np.zeros((NUM_EPOCHS, 2))
+# for i in range(NUM_EPOCHS):
+#     checkpoint_filename = MODEL_NAME + 'psipred_{}.chkpt'.format(i)
+#     net.load_weights(checkpoint_filename)
+#     average_scores = test(net, X_test, y_test)
+#     all_scores[i] = average_scores
 #
-# for seq in seqs_train:
-#     # omit any proteins shorter than 100 residues
-#     if seq.length < NUM_TIMESTEPS:
-#         pass
-#     else:
-#         Xs, ys = make_subsequences(sequence=seq, num_timesteps=NUM_TIMESTEPS, stride=3)
-#         net.train_on_batch(Xs, ys, verbose=1)
+# all_loss = all_scores[:, 0]
+# all_accuracy = all_scores[:, 1]
+#
+# with open(MODEL_NAME+'psipred_scores.results', 'wb') as f:
+#     pkl.dump({'loss': all_loss, 'accuracy': all_accuracy}, f)
+#
 
-
-net = build_net_1()
-concatenated_data, concatenated_labels = concatenate_full_dataset(seqs_train, pad_amount=NUM_TIMESTEPS)
-Xs, ys = make_redundant_subseqs_from_concated_dataset(concatenated_data, concatenated_labels, num_timesteps=NUM_TIMESTEPS, stride=1)
-
-middles = []
-for y in ys:
-    middles.append(middle(y))
-
-flats = []
-for X in Xs:
-    flats.append(X.flatten())
-    print X.flatten().shape
-
-
-net.fit(np.asarray(flats), np.asarray(middles), verbose=1)
+# plt.plot(all_accuracy)
+# plt.show()
